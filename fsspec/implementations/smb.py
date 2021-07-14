@@ -66,6 +66,7 @@ class SMBFileSystem(AbstractFileSystem):
         password=None,
         timeout=60,
         encrypt=None,
+        share_access=None,
         **kwargs,
     ):
         """
@@ -83,13 +84,20 @@ class SMBFileSystem(AbstractFileSystem):
             Port to connect with. Usually 445, sometimes 139.
         username: str or None
             Username to connect with. Required if Kerberos auth is not being used.
-        password: str of None
+        password: str or None
             User's password on the server, if using username
         timeout: int
             Connection timeout in seconds
         encrypt: bool
             Whether to force encryption or not, once this has been set to True
             the session cannot be changed back to False.
+        share_access: str or None
+            specifies the type of access that is allowed when a handle to this 
+            file is opened by another process.
+              None (the default): exclusively locks the file until closed.
+              'r': Allow other handles to be opened with read access.
+              'w': Allow other handles to be opened with write access.
+              'd': Allow other handles to be opened with delete access.
         """
         super(SMBFileSystem, self).__init__(**kwargs)
         self.host = host
@@ -99,6 +107,7 @@ class SMBFileSystem(AbstractFileSystem):
         self.timeout = timeout
         self.encrypt = encrypt
         self.temppath = kwargs.pop("temppath", "")
+        self.share_access = share_access
         self._connect()
 
     def _connect(self):
@@ -198,8 +207,21 @@ class SMBFileSystem(AbstractFileSystem):
         wpath = _as_unc_path(self.host, path)
         if "w" in mode and autocommit is False:
             temp = _as_temp_path(self.host, path, self.temppath)
-            return SMBFileOpener(wpath, temp, mode, block_size=bls, **kwargs)
-        return smbclient.open_file(wpath, mode, buffering=bls, **kwargs)
+            return SMBFileOpener(
+                wpath,
+                temp,
+                mode,
+                block_size=bls,
+                share_access=self.share_access,
+                **kwargs
+            )
+        return smbclient.open_file(
+            wpath,
+            mode,
+            buffering=bls,
+            share_access=self.share_access,
+            **kwargs
+        )
 
     def copy(self, path1, path2, **kwargs):
         """ Copy within two locations in the same filesystem"""
@@ -245,7 +267,7 @@ def _share_has_path(path):
 class SMBFileOpener(object):
     """writes to remote temporary file, move on commit"""
 
-    def __init__(self, path, temp, mode, block_size=-1, **kwargs):
+    def __init__(self, path, temp, mode, block_size=-1, share_access=None, **kwargs):
         self.path = path
         self.temp = temp
         self.mode = mode
@@ -253,12 +275,17 @@ class SMBFileOpener(object):
         self.kwargs = kwargs
         self.smbfile = None
         self._incontext = False
+        self.share_access = share_access
         self._open()
 
     def _open(self):
         if self.smbfile is None or self.smbfile.closed:
             self.smbfile = smbclient.open_file(
-                self.temp, self.mode, buffering=self.block_size, **self.kwargs
+                self.temp,
+                self.mode,
+                buffering=self.block_size,
+                share_access=self.share_access
+                **self.kwargs
             )
 
     def commit(self):
